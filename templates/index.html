@@ -1,0 +1,236 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Document to PPT</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: #1a1a2e;
+            border-radius: 16px;
+            padding: 48px;
+            width: 560px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: #00d2ff;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 24px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        select, input[type="file"] {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            font-size: 15px;
+        }
+        input[type="file"] { padding: 10px; }
+        button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #00d2ff, #007acc);
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status {
+            margin-top: 20px;
+            padding: 16px;
+            border-radius: 8px;
+            display: none;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .status.info { display: block; background: #1a2a3a; border: 1px solid #007acc; }
+        .status.success { display: block; background: #1a2e1a; border: 1px solid #00cc66; }
+        .status.error { display: block; background: #2e1a1a; border: 1px solid #cc3333; }
+        .download-link {
+            display: inline-block;
+            margin-top: 8px;
+            color: #00d2ff;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .download-link:hover { text-decoration: underline; }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #007acc;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .model-hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Document to PPT</h1>
+        <p class="subtitle">Upload a document, and the local Ollama large model automatically extracts key information and generates a presentation.</p>
+
+        <form id="uploadForm">
+            <div class="form-group">
+                <label for="model">Select Model</label>
+                <select id="model" name="model">
+                    <option value="">loading...</option>
+                </select>
+                <div class="model-hint">Automatically loads the list of installed models from Ollama, with the model configured in the backend selected by default.</div>
+            </div>
+
+            <div class="form-group">
+                <label for="file">Upload document (.docx / .pdf)</label>
+                <input type="file" id="file" name="file" accept=".docx,.pdf">
+            </div>
+
+            <button type="submit" id="submitBtn">Generate PPT</button>
+        </form>
+
+        <div id="status" class="status"></div>
+    </div>
+
+    <script>
+        // 后端配置的默认模型（由后端 /api/models 返回）
+        // 如果后端未设置，则自动选择列表第一个模型
+
+        // 加载 Ollama 可用模型列表
+        async function loadModels() {
+            const select = document.getElementById("model");
+            try {
+                const resp = await fetch("/api/models");
+                const data = await resp.json();
+                const models = data.models || [];
+                const backendDefault = data.default_model || "";
+
+                // Ollama 无模型，显示"无可用模型"
+                if (models.length === 0) {
+                    select.innerHTML = '<option value="" disabled>无可用模型</option>';
+                    return;
+                }
+
+                // 判断后端默认模型是否在列表中
+                const hasDefault = backendDefault && models.includes(backendDefault);
+
+                // 生成选项，自动设置 selected
+                select.innerHTML = models
+                    .map(name => {
+                        let selected = '';
+                        if (hasDefault && name === backendDefault) {
+                            selected = ' selected';
+                        } else if (!hasDefault && name === models[0]) {
+                            selected = ' selected';
+                        }
+                        return `<option value="${name}"${selected}>${name}</option>`;
+                    })
+                    .join("");
+
+            } catch (e) {
+                console.warn("无法获取模型列表:", e);
+                // 网络异常时显示空选项
+                select.innerHTML = '<option value="" disabled>Unable to load the model list.</option>';
+            }
+        }
+        loadModels();
+
+        // 表单提交处理
+        document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const fileInput = document.getElementById("file");
+            const modelSelect = document.getElementById("model");
+            const statusDiv = document.getElementById("status");
+            const submitBtn = document.getElementById("submitBtn");
+
+            if (!fileInput.files.length) {
+                statusDiv.className = "status error";
+                statusDiv.textContent = "Please select a file first.";
+                return;
+            }
+
+            // 显示加载状态
+            submitBtn.disabled = true;
+            statusDiv.className = "status info";
+            statusDiv.innerHTML = '<span class="spinner"></span> Parsing the document and invoking the large model; please wait...';
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+            formData.append("model", modelSelect.value);
+
+            try {
+                const resp = await fetch("/api/generate", {
+                    method: "POST",
+                    body: formData,
+                });
+
+                // 安全解析响应
+                const contentType = resp.headers.get("content-type") || "";
+                let data;
+
+                if (contentType.includes("application/json")) {
+                    data = await resp.json();
+                } else {
+                    const text = await resp.text();
+                    throw new Error(`服务器返回非JSON响应: ${text.slice(0, 200)}`);
+                }
+
+                if (data.success) {
+                    statusDiv.className = "status success";
+                    statusDiv.innerHTML = `
+                        Generation complete! A total of ${data.slides_count} slides.<br>
+                        <strong>${data.title}</strong><br>
+                        <a class="download-link" href="${data.download}" download>Click to download PPTX</a>
+                    `;
+                } else {
+                    statusDiv.className = "status error";
+                    statusDiv.textContent = "❌ " + (data.error || "Generation failed");
+                }
+            } catch (err) {
+                statusDiv.className = "status error";
+                statusDiv.textContent = "❌ Request failed: " + err.message;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
